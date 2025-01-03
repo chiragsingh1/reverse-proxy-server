@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const upstreamSchema = z.object({
     id: z.string(),
-    path: z.string().url(),
+    url: z.string(),
 });
 
 const headerSchema = z.object({
@@ -26,3 +26,5 @@ const serverSchema = z.object({
 export const rootConfigSchema = z.object({
     server: serverSchema,
 });
+
+export type ConfigSchemaType = z.infer<typeof rootConfigSchema>;
