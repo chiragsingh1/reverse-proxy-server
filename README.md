@@ -29,7 +29,7 @@ Our reverse proxy implementation follows these key design principles:
 4. **Modularity**: Clear separation of concerns with distinct modules for configuration, server logic, and schema validation.
 
 #### Project Structure
-
+```
 ├── config.yaml           # Server configuration
 ├── src/
 │   ├── config-schema.ts  # Configuration validation schemas
@@ -38,7 +38,7 @@ Our reverse proxy implementation follows these key design principles:
 │   ├── server-schema.ts # Server message schemas
 │   └── server.ts        # Core server implementation
 └── tsconfig.json        # TypeScript configuration
-
+```
 #### Key Components
 
 1. **config.yaml**: Defines the server's configuration, including the port, worker processes, upstream servers, headers, and routing rules.
