@@ -1,29 +1,32 @@
 ### Building a Scalable Reverse Proxy Server with Node.js Clusters and TypeScript like Nginx
 
-In today's microservices architecture, reverse proxies play a crucial role in managing and routing incoming requests to various backend services. Let's explore how to build a basic, robust and scalable reverse proxy server using Node.js and TypeScript, complete with configuration management and multi-process support.
-
 #### The Inspiration
+In today's microservices architecture, reverse proxies play a crucial role in managing and routing incoming requests to various backend services. 
 
-Modern web applications often consist of multiple services running on different servers. Managing these services and ensuring efficient request routing can become complex. A reverse proxy serves as a central point of control, handling tasks like:
+![Reverse Proxy](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/b2eup696gpymbppwirkj.png)
 
-- Load balancing across multiple upstream servers
-- Request routing based on URL patterns
-- Header manipulation and request transformation
-- Response caching and compression
+A reverse proxy sits in front of the web servers of an application and intercepts the requests coming from the client machines. This has a lot of benefits such as load balancing, hidden origin servers IP addresses leading to better security, caching, rate limiting, etc. 
 
-While there are excellent solutions like Nginx and HAProxy available, building a custom reverse proxy will allows us to understand the underlying concepts better and tailor the functionality to specific needs.
+In a distributed and microservice architecture, a single entry point is necessary. Reverse Proxy servers like Nginx helps in such scenarios. If we have multiple instances of our server running, managing and ensuring efficient request routing becomes tricky. A reverse proxy like Nginx is a perfect solution in this case. We can point our domain to the IP Address of the Nginx server and the Nginx will route the incoming request according to the configuration to one of the instances while taking care of the load being handled by each.
 
-The goal of this project was to:
-1. Understand the fundamentals of reverse proxying.
-2. Implement scalable server architectures using worker processes.
-3. Validate configurations to ensure reliability.
-4. Utilize modern TypeScript features for type safety and maintainability.
+#### How Nginx does it so good?
+I will recommend reading through this article from Nginx which explains in detail how Nginx is able to support huge scale of requests with super reliability and speed: [Nginx Architecture](https://blog.nginx.org/blog/inside-nginx-how-we-designed-for-performance-scale)
+
+In short, Nginx has a Master process and a bunch of worker processes. It also has helper processes like Cache Loader and Cache Manager. The master and the worker process do all the heavy work.
+
+- **Master Process**: Manages configuration and spawns child processes.
+- **Cache Loader/Manager**: Handle cache loading and pruning with minimal resources.
+- **Worker Processes**: Manage connections, disk I/O, and upstream communication, running nonblocking and independently.
+
+Worker processes handle multiple connections nonblocking, reducing context switches. They are single-threaded, run independently, and use shared memory for shared resources like cache and session data. This architecture helps Nginx to reduce the number of context switches and increase the speed faster than a blocking, multi process architecture.
+
+Taking inspiration from this, we will use the same concept of master and worker process and will implement our own **event-driven reverse proxy server** which will be able to handle thousands of connection per worker process.
 
 #### Project Architecture
 
 Our reverse proxy implementation follows these key design principles:
 
-1. **Configuration-Driven**: All proxy behavior is defined in a YAML configuration file, making it easy to modify routing rules without changing code.
+1. **Configuration-Driven**: All proxy behavior is defined in a YAML configuration file, making it easy to modify routing rules.
 2. **Type Safety**: TypeScript and Zod schemas ensure configuration validity and runtime type safety.
 3. **Scalability**: Node.js cluster module enables utilizing multiple CPU cores for better performance.
 4. **Modularity**: Clear separation of concerns with distinct modules for configuration, server logic, and schema validation.
@@ -48,34 +51,34 @@ Our reverse proxy implementation follows these key design principles:
 5. **server.ts**: Implements the reverse proxy server logic, including cluster setup, HTTP handling, and request forwarding.
 6. **index.ts**: Serves as the entry point, parsing command-line options and initiating the server.
 
-### Implementation Deep Dive
-
 #### Configuration Management
 
-The configuration system uses YAML for its human-readable format and strong support for complex data structures. Here's how it works:
+The configuration system uses YAML. Here's how it works:
 
 ```yaml
 server:
-    listen: 8080
-    workers: 2
-    upstreams:
+    listen: 8080          # Port the server listens on.
+    workers: 2            # Number of worker processes to handle requests.
+    upstreams:            # Define upstream servers (backend targets).
         - id: jsonplaceholder
           url: jsonplaceholder.typicode.com
         - id: dummy
           url: dummyjson.com
-    headers:
+    headers:              # Custom headers added to proxied requests.
         - key: x-forward-for
-          value: $ip
+          value: $ip      # Adds the client IP to the forwarded request.
         - key: Authorization
-          value: Bearer xyz
-    rules:
+          value: Bearer xyz  # Adds an authorization token to requests.
+    rules:                # Define routing rules for incoming requests.
         - path: /test
           upstreams:
-              - dummy
+              - dummy     # Routes requests to "/test" to the "dummy" upstream.
         - path: /
           upstreams:
-              - jsonplaceholder
+              - jsonplaceholder  # Routes all other requests to "jsonplaceholder".
+
 ```
+Incoming requests are evaluated against the rules. Based on the path, the reverse proxy determines which upstream server to forward the request to.
 
 #### Configuration Validation (config-schema.ts)
 We use Zod to define strict schemas for configuration validation:
@@ -113,12 +116,6 @@ export const rootConfigSchema = z.object({
 export type ConfigSchemaType = z.infer<typeof rootConfigSchema>;
 ```
 
-This schema-first approach provides several benefits:
-- Runtime type safety
-- Automatic TypeScript type generation
-- Clear validation errors for misconfigurations
-- Self-documenting configuration structure
-
 #### Parsing and Validating Configurations (config.ts)
 
 The config.ts module provides utility functions to parse and validate the configuration file.
@@ -141,9 +138,11 @@ export async function validateConfig(config: string) {
     return validatedConfig;
 }
 ```
+
 ### Reverse Proxy Server Logic (server.ts)
 
 The server utilizes the Node.js cluster module for scalability and the http module for handling requests. The master process distributes requests to worker processes, which forwards them to upstream servers. Let's explore the server.ts file in detail, which contains the core logic of our reverse proxy server. We'll break down each component and understand how they work together to create a scalable proxy server. 
+
 The server implementation follows a master-worker architecture using **Node.js's cluster** module. This design allows us to:
 - Utilize multiple CPU cores
 - Handle requests concurrently
@@ -161,8 +160,6 @@ The server implementation follows a master-worker architecture using **Node.js's
    - Match requests against routing rules
    - Forward requests to upstream servers
    - Process responses and send them back to clients
-
-Let's examine each part of the implementation in detail.
 
 #### Master Process Setup
 ```typescript
@@ -296,52 +293,45 @@ process.on("message", async (message: string) => {
     request.end();
 });
 ```
-
 The master process communicates with workers by constructing a standardized message payload, including all necessary request information, using Node.js IPC (Inter-Process Communication) and validating message structure using Zod schemas.
 
 Workers handle the actual request processing and proxying. Each worker:
-
 - Loads its configuration from environment variables
 - Validates the configuration using Zod schemas
 - Maintains its own copy of the configuration
-Workers select upstream servers by:
 
+Workers select upstream servers by:
 - Finding the appropriate upstream ID from the rule
 - Locating the upstream server configuration
 - Validating the upstream server exists
 
 The request forwarding mechanism:
-
 - Creates a new HTTP request to the upstream server
 - Streams the response data
 - Aggregates the response body
 - Sends the response back to the master process
 
 #### Running the Server
-
 To run the server, follow these steps:
-
 1. **Build the project:**
    
 ```bash
    npm run build
 ```
-
 2. **Start the server:**
    
 ```bash
    npm start -- --config config.yaml
 ```
-
 3. **Development mode:**
    
 ```bash
    npm run dev
 ```
 
-![Image description](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/4rw8jh1ei69r8kmtpxvy.png)
+![Screenshot1](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/4rw8jh1ei69r8kmtpxvy.png)
 
-In the above screenshot, we can see that there is 1 Master Node running and 2 Worker Processes are running. Our reverse proxy server is listening on port 8080.
+In the above screenshot, we can see that there is 1 Master Node and 2 Worker Processes are running. Our reverse proxy server is listening on port 8080.
 In the config.yaml file, we describe two upstream servers namely: `jsonplaceholder` and `dummy`. If we want all requests coming to our server to be routed to `jsonplaceholder`, we put the rule as: 
 ```yaml
 - path: /
@@ -356,25 +346,15 @@ Similarly, if we want our request to the `/test` endpoint should route to our `d
 ```
 Let's test this out! 
 
-![Screenshot 1](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/r5smrshbz785l727efc5.png)
+![Screenshot2](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/r5smrshbz785l727efc5.png)
 
-Wow, that is cool! We are navigating to `localhost:8080` but in response we can see we received the homepage for `jsonplaceholder.typicode.com`. The end user does not even know that we are seeing response from a separate server. That is why Reverse Proxy servers are important. If we have multiple servers running the same code and don't want to expose all of their ports to end users, use a reverse proxy as an abstraction layer. Users will hit the reverse proxy server, a very robust and quick server, and the reverse proxy server will determine which server to hit. 
+Wow, that is cool! We are navigating to `localhost:8080` but in response we can see we received the homepage for `jsonplaceholder.typicode.com`. The end user does not even know that we are seeing response from a separate server. That is why Reverse Proxy servers are important. If we have multiple servers running the same code and don't want to expose all of their ports to end users, use a reverse proxy as an abstraction layer. Users will hit the reverse proxy server, a very robust and quick server, and it will determine which server to route request to. 
 
 Let's hit `localhost:8080/todos` now and see what happens.
 
-![Screenshot 2](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/v6llqhnmgnepdnsg4k6a.png)
+![Screenshot3](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/v6llqhnmgnepdnsg4k6a.png)
 
 Our request got reverse proxied to the `jsonplaceholder` server again and received a JSON response from the resolved URL: `jsonplaceholder.typicode.com/todos`.
-
-
-#### Error Handling and Type Safety
-
-The implementation includes comprehensive error handling:
-
-1. **Configuration Validation**: Zod schemas ensure configuration errors are caught early.
-2. **Worker Process Errors**: The master process handles worker crashes and can restart failed workers.
-3. **Request Processing Errors**: Workers properly handle and report upstream server errors.
-4. **Type Safety**: TypeScript and Zod provide end-to-end type safety for all messages between processes.
 
 #### Communication Flow
 Let's visualize the complete request flow:
@@ -387,7 +367,6 @@ Worker → Master Process
 Master Process → Client
 
 #### Performance Considerations
-
 The multi-process architecture provides several performance benefits:
 
 1. **CPU Utilization**: Worker processes can run on different CPU cores, utilizing available hardware resources.
@@ -395,7 +374,6 @@ The multi-process architecture provides several performance benefits:
 3. **Load Distribution**: Random distribution of requests helps prevent any single worker from becoming overwhelmed.
 
 #### Future Improvements
-
 While functional, the current implementation could be enhanced with:
 
 1. **Better Load Balancing**: Implement more sophisticated algorithms like round-robin or least-connections.
@@ -405,8 +383,13 @@ While functional, the current implementation could be enhanced with:
 5. **WebSocket Support**: Extend the proxy to handle WebSocket connections.
 6. **HTTPS Support**: Add SSL/TLS termination capabilities.
 
-### Conclusion
+### Wrapping Up
 
-Building a reverse proxy server from scratch provides valuable insights into web architecture and Node.js server design. The combination of TypeScript and Zod creates a robust foundation for configuration management, while the cluster module enables scalable request handling.
+Building a reverse proxy server from scratch might seem intimidating at first, but as we’ve explored, it’s a rewarding experience. By combining Node.js clusters, TypeScript, and YAML-based configuration management, we’ve created a scalable and efficient system inspired by Nginx. 
 
-This implementation demonstrates how modern JavaScript tools and practices can be used to build production-grade infrastructure components. Whether used as a learning tool or as a base for a custom proxy solution, the code provides a solid foundation for further development.
+There’s still room to enhance this implementation — better load balancing, caching, or WebSocket support are just a few ideas to explore. But the current design sets a strong foundation for experimenting and scaling further. If you’ve followed along, you’re now equipped to dive deeper into reverse proxies or even start building custom solutions tailored to your needs.
+
+If you’d like to connect or see more of my work, check out my [GitHub](github.com/chiragsingh1), [LinkedIn](www.linkedin.com/in/chiragsingh2717).
+The repository for this project can be found [here](https://github.com/chiragsingh1/reverse-proxy-server).
+
+I’d love to hear your thoughts, feedback, or ideas for improvement. Thanks for reading, and happy coding! 🚀
